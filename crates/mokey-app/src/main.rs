@@ -22,6 +22,7 @@ fn main() -> eframe::Result {
             .with_always_on_top()
             .with_taskbar(false)
             .with_visible(false)
+            .with_position([-32000.0, -32000.0])
             .with_inner_size([400.0, 300.0]),
         ..Default::default()
     };

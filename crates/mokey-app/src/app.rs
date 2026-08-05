@@ -371,5 +371,8 @@ impl eframe::App for MokeyApp {
         self.handle_hud_keys(ctx);
         self.draw_hud(ctx);
         self.settings_window(ctx);
+        if !self.hud_visible {
+            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        }
     }
 }
