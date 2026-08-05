@@ -374,5 +374,6 @@ impl eframe::App for MokeyApp {
         if !self.hud_visible {
             ctx.send_viewport_cmd(ViewportCommand::Visible(false));
         }
+        ctx.request_repaint_after(Duration::from_millis(50));
     }
 }

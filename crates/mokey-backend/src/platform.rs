@@ -71,3 +71,18 @@ pub fn list() -> Result<Vec<MonitorInfo>, BackendError> {
         "mokey has not been ported to this Linux desktop yet".into(),
     ))
 }
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn monitors_are_enumerated() {
+        let monitors = list().expect("monitor enumeration should work");
+        assert!(!monitors.is_empty(), "at least one monitor");
+        for m in &monitors {
+            assert!(m.rect.w > 0 && m.rect.h > 0, "monitor has size: {m:?}");
+            assert!(m.scale > 0.0, "monitor has scale: {m:?}");
+        }
+    }
+}

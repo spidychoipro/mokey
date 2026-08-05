@@ -205,7 +205,12 @@ pub fn spawn(
             }
         };
 
-        let _ = rdev::listen(move |event| on_key(event, &mut ctrl, &mut alt, &mut shift, &mut meta));
+        let result = rdev::listen(move |event| {
+            on_key(event, &mut ctrl, &mut alt, &mut shift, &mut meta)
+        });
+        if let Err(e) = result {
+            eprintln!("mokey: global key listener failed: {e:?}");
+        }
     });
 
     Ok(GlobalInput {
@@ -248,4 +253,39 @@ fn map_key(key: Key, shift: bool) -> Option<KeyEvent> {
         return None;
     }
     Some(KeyEvent { key: mk, shift })
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn injected_trigger_hotkey_is_detected() {
+        let input = spawn("Ctrl+Alt+Space", "Ctrl+Alt+S").expect("spawn listener");
+        std::thread::sleep(Duration::from_millis(400));
+        let mut enigo = enigo::Enigo::new(&enigo::Settings::default()).expect("enigo init");
+        use enigo::Keyboard;
+        use enigo::Direction::{Press, Release};
+        use enigo::Key as EKey;
+
+        enigo.key(EKey::Control, Press).ok();
+        enigo.key(EKey::Alt, Press).ok();
+        enigo.key(EKey::Space, Press).ok();
+        enigo.key(EKey::Space, Release).ok();
+        enigo.key(EKey::Alt, Release).ok();
+        enigo.key(EKey::Control, Release).ok();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match input.hotkeys.try_recv() {
+                Ok(HotkeyId::Trigger) => return,
+                Ok(_) => panic!("wrong hotkey"),
+                Err(mpsc::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => panic!("hotkey not received: {e:?}"),
+            }
+        }
+    }
 }
