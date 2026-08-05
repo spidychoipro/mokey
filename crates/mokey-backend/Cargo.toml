@@ -1,0 +1,23 @@
+[package]
+name = "mokey-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mokey-core.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+enigo.workspace = true
+rdev.workspace = true
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(unix)'.dependencies]
+rdev.workspace = true

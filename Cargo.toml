@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mokey-core",
+    "crates/mokey-backend",
+    "crates/mokey-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/spidychoipro/mokey"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+thiserror = "2"
+enigo = "0.3"
+rdev = "0.5"
+eframe = "0.31"
+egui = "0.31"
+mokey-core = { path = "crates/mokey-core" }
+mokey-backend = { path = "crates/mokey-backend" }
