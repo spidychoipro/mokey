@@ -128,9 +128,13 @@ fn parse_key(s: &str) -> Option<Key> {
 
 /// Spawn a global key listener thread. Returns a `GlobalInput` with a hotkey
 /// receiver and a key-event receiver used while dragging.
+///
+/// `wake` is invoked whenever a configured hotkey is pressed, so the host
+/// event loop can be woken even while idle or with a hidden window.
 pub fn spawn(
     trigger: &str,
     settings: &str,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<GlobalInput, BackendError> {
     let trigger = Hotkey::parse(trigger)?;
     let settings = Hotkey::parse(settings)?;
@@ -145,6 +149,7 @@ pub fn spawn(
         let mut shift = false;
         let mut meta = false;
         let capture = capture_for_thread;
+        let wake = wake;
 
         let is_ctrl = |k: Key| matches!(k, Key::ControlLeft | Key::ControlRight);
         let is_alt = |k: Key| matches!(k, Key::Alt | Key::AltGr);
@@ -177,6 +182,9 @@ pub fn spawn(
                     let mut matched_hotkey = false;
                     for (spec, id) in [(&trigger, HotkeyId::Trigger), (&settings, HotkeyId::Settings)] {
                         if key == spec.key && spec.matches(*ctrl, *alt, *shift, *meta) {
+                            if let Some(w) = &wake {
+                                w();
+                            }
                             let _ = hk_tx.send(id);
                             matched_hotkey = true;
                         }
@@ -258,11 +266,15 @@ fn map_key(key: Key, shift: bool) -> Option<KeyEvent> {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use std::time::Duration;
+
+    static LISTEN_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn injected_trigger_hotkey_is_detected() {
-        let input = spawn("Ctrl+Alt+Space", "Ctrl+Alt+S").expect("spawn listener");
+        let _guard = LISTEN_LOCK.lock().unwrap();
+        let input = spawn("Ctrl+Alt+Space", "Ctrl+Alt+S", None).expect("spawn listener");
         std::thread::sleep(Duration::from_millis(400));
         let mut enigo = enigo::Enigo::new(&enigo::Settings::default()).expect("enigo init");
         use enigo::Keyboard;
@@ -287,5 +299,55 @@ mod tests {
                 Err(e) => panic!("hotkey not received: {e:?}"),
             }
         }
+    }
+
+    #[test]
+    fn capture_forwards_injected_keys() {
+        let _guard = LISTEN_LOCK.lock().unwrap();
+        let input = spawn("Ctrl+Alt+Space", "Ctrl+Alt+S", None).expect("spawn listener");
+        std::thread::sleep(Duration::from_millis(400));
+        input.capture.store(true, Ordering::Relaxed);
+        let mut enigo = enigo::Enigo::new(&enigo::Settings::default()).expect("enigo init");
+        use enigo::Keyboard;
+        use enigo::Direction::{Press, Release};
+        use enigo::Key as EKey;
+
+        enigo.key(EKey::Unicode('h'), Press).ok();
+        enigo.key(EKey::Unicode('h'), Release).ok();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match input.keys.try_recv() {
+                Ok(ke) => {
+                    assert_eq!(ke.key, MokeyKey::H);
+                    return;
+                }
+                Err(mpsc::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => panic!("key not forwarded: {e:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn keys_not_forwarded_when_capture_off() {
+        let _guard = LISTEN_LOCK.lock().unwrap();
+        let input = spawn("Ctrl+Alt+Space", "Ctrl+Alt+S", None).expect("spawn listener");
+        std::thread::sleep(Duration::from_millis(400));
+        input.capture.store(false, Ordering::Relaxed);
+        let mut enigo = enigo::Enigo::new(&enigo::Settings::default()).expect("enigo init");
+        use enigo::Keyboard;
+        use enigo::Direction::{Press, Release};
+        use enigo::Key as EKey;
+
+        enigo.key(EKey::Unicode('h'), Press).ok();
+        enigo.key(EKey::Unicode('h'), Release).ok();
+
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            input.keys.try_recv().is_err(),
+            "key should not be forwarded while capture is off"
+        );
     }
 }

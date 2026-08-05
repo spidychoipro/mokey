@@ -23,22 +23,34 @@ pub struct MokeyApp {
     settings_open: bool,
     settings_saved_hint: Option<String>,
     hud_bg: Option<TextureHandle>,
+    hud_offscreen: bool,
+    hud_pos: Option<Pos2>,
 }
 
 impl MokeyApp {
     pub fn new(
+        cc: &eframe::CreationContext<'_>,
         config: Config,
         mouse: Box<dyn MouseBackend>,
-        hotkeys: Receiver<HotkeyId>,
-        global_keys: Receiver<KeyEvent>,
-        capture: Arc<AtomicBool>,
     ) -> MokeyApp {
+        let ctx = cc.egui_ctx.clone();
+        let wake_ctx = ctx.clone();
+        let wake: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
+            wake_ctx.request_repaint();
+        }));
+        let input = mokey_backend::hotkey::spawn(
+            &config.general.trigger_hotkey,
+            &config.general.settings_hotkey,
+            wake,
+        )
+        .expect("failed to register hotkeys");
+        let capture = input.capture.clone();
         let monitors = mokey_backend::platform::list().unwrap_or_default();
         let controller = Controller::new(config, mouse);
         MokeyApp {
             controller,
-            hotkeys,
-            global_keys,
+            hotkeys: input.hotkeys,
+            global_keys: input.keys,
             capture,
             monitors,
             settings_viewport: ViewportId::from_hash_of("mokey-settings"),
@@ -46,7 +58,23 @@ impl MokeyApp {
             settings_open: false,
             settings_saved_hint: None,
             hud_bg: None,
+            hud_offscreen: true,
+            hud_pos: None,
         }
+    }
+
+    fn move_hud_offscreen(&mut self, ctx: &egui::Context) {
+        if !self.hud_offscreen {
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::new(-32000.0, -32000.0)));
+            self.hud_offscreen = true;
+        }
+    }
+
+    fn move_hud_on_screen(&mut self, ctx: &egui::Context, pos: Pos2) {
+        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
+        ctx.send_viewport_cmd(ViewportCommand::Focus);
+        self.hud_offscreen = false;
+        self.hud_pos = Some(pos);
     }
 
     fn drain_hotkeys(&mut self, ctx: &egui::Context) {
@@ -91,6 +119,7 @@ impl MokeyApp {
         self.hud_bg = capture_monitor_bg(ctx, &monitor);
         self.controller.start_session(monitor.rect);
         self.show_hud_over_monitor(ctx, &monitor);
+        self.capture.store(true, Ordering::Relaxed);
     }
 
     fn show_hud_over_monitor(&mut self, ctx: &egui::Context, monitor: &mokey_backend::platform::MonitorInfo) {
@@ -102,21 +131,20 @@ impl MokeyApp {
             monitor.rect.w as f32 / monitor.scale as f32,
             monitor.rect.h as f32 / monitor.scale as f32,
         );
-        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
         ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
-        ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
         self.hud_visible = true;
+        self.move_hud_on_screen(ctx, pos);
     }
 
     fn apply_outcome(&mut self, ctx: &egui::Context, outcome: &ExecOutcome) {
         if outcome.hide_hud {
-            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            self.move_hud_offscreen(ctx);
             self.hud_bg = None;
         }
         let needs_delay = outcome.click.is_some() || outcome.press_drag.is_some();
         if needs_delay {
-            // Let the OS process the window hide before injecting input.
+            // Let the OS process the window move before injecting input.
             std::thread::sleep(Duration::from_millis(30));
             self.controller.apply_hidden_actions(outcome);
         }
@@ -124,35 +152,12 @@ impl MokeyApp {
             self.capture.store(true, Ordering::Relaxed);
         }
         if outcome.show_hud {
-            ctx.send_viewport_cmd(ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(ViewportCommand::Focus);
+            let pos = self.hud_pos.unwrap_or(Pos2::ZERO);
+            self.move_hud_on_screen(ctx, pos);
         }
         if outcome.finished {
             self.hud_visible = false;
             self.capture.store(false, Ordering::Relaxed);
-        }
-    }
-
-    fn handle_hud_keys(&mut self, ctx: &egui::Context) {
-        if !self.hud_visible || self.controller.session.is_none() {
-            return;
-        }
-        let events: Vec<egui::Event> = ctx.input(|i| i.events.clone());
-        for ev in events {
-            if !crate::keys::is_key_press(&ev) {
-                continue;
-            }
-            if let egui::Event::Key { key, modifiers, .. } = ev {
-                let mkey = crate::keys::map_key(key);
-                if mkey == mokey_core::MokeyKey::Other {
-                    continue;
-                }
-                let outcome = self.controller.process(KeyEvent {
-                    key: mkey,
-                    shift: modifiers.shift,
-                });
-                self.apply_outcome(ctx, &outcome);
-            }
         }
     }
 
@@ -368,11 +373,10 @@ impl eframe::App for MokeyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_hotkeys(ctx);
         self.drain_global_keys(ctx);
-        self.handle_hud_keys(ctx);
         self.draw_hud(ctx);
         self.settings_window(ctx);
         if !self.hud_visible {
-            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            self.move_hud_offscreen(ctx);
         }
         ctx.request_repaint_after(Duration::from_millis(50));
     }

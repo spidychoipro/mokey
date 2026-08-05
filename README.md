@@ -1,5 +1,7 @@
 # mokey
 
+> [English](README.en.md) | 한국어
+
 키보드로 마우스를 조종하는 오픈소스 도구. [mouseless](https://github.com/milgra/mouseless)의 대안으로, 그리드 줌(숫자 입력 방식) UX와 선택적 Vim 모드를 제공합니다.
 
 - **그리드 줌**: 트리거 키 → 화면이 숫자 격자로 분할 → 번호 입력으로 확대 반복 → Enter/클릭
