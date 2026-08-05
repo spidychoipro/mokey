@@ -2,7 +2,10 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
 
-use egui::{Align2, Color32, FontId, Pos2, Rect as UiRect, Stroke, StrokeKind, ViewportCommand, ViewportId};
+use egui::{
+    Align2, Color32, FontId, Pos2, Rect as UiRect, Stroke, StrokeKind, TextureHandle,
+    TextureOptions, ViewportCommand, ViewportId,
+};
 use mokey_backend::hotkey::HotkeyId;
 use mokey_backend::mouse::MouseBackend;
 use mokey_core::{Config, KeyEvent, Point};
@@ -19,6 +22,7 @@ pub struct MokeyApp {
     hud_visible: bool,
     settings_open: bool,
     settings_saved_hint: Option<String>,
+    hud_bg: Option<TextureHandle>,
 }
 
 impl MokeyApp {
@@ -41,6 +45,7 @@ impl MokeyApp {
             hud_visible: false,
             settings_open: false,
             settings_saved_hint: None,
+            hud_bg: None,
         }
     }
 
@@ -83,6 +88,7 @@ impl MokeyApp {
         let Some(monitor) = monitor else {
             return;
         };
+        self.hud_bg = capture_monitor_bg(ctx, &monitor);
         self.controller.start_session(monitor.rect);
         self.show_hud_over_monitor(ctx, &monitor);
     }
@@ -106,6 +112,7 @@ impl MokeyApp {
     fn apply_outcome(&mut self, ctx: &egui::Context, outcome: &ExecOutcome) {
         if outcome.hide_hud {
             ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            self.hud_bg = None;
         }
         let needs_delay = outcome.click.is_some() || outcome.press_drag.is_some();
         if needs_delay {
@@ -163,9 +170,20 @@ impl MokeyApp {
         };
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(bg))
+            .frame(egui::Frame::NONE.fill(Color32::BLACK))
             .show(ctx, |ui| {
                 let painter = ui.painter();
+                let full = ui.max_rect();
+                if let Some(tex) = &self.hud_bg {
+                    painter.image(
+                        tex.id(),
+                        full,
+                        UiRect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+                painter.rect_filled(full, 0.0, bg);
+
                 let region = session.region;
                 let region_min = Pos2 {
                     x: (region.x as f64 / scale) as f32 - origin.x,
@@ -328,6 +346,22 @@ impl MokeyApp {
             ui.label(hint);
         }
     }
+}
+
+fn capture_monitor_bg(
+    ctx: &egui::Context,
+    monitor: &mokey_backend::platform::MonitorInfo,
+) -> Option<TextureHandle> {
+    let image = mokey_backend::screen::capture_region(monitor.rect).ok()?;
+    let mut rgba = Vec::with_capacity(image.bgra.len());
+    for px in image.bgra.chunks_exact(4) {
+        rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
+    }
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(
+        [image.width as usize, image.height as usize],
+        &rgba,
+    );
+    Some(ctx.load_texture("hud-bg", color_image, TextureOptions::LINEAR))
 }
 
 impl eframe::App for MokeyApp {
