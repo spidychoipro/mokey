@@ -11,6 +11,26 @@
 
 ## 변경 이력
 
+### 2026-08-06 — 설정 창 UX 정비 + 테마 시스템 도입
+
+**1. 설정 창 닫기 불가 (X 버튼/Alt+F4)**
+
+- 증상: 설정 창이 X/Alt+F4로 닫히지 않고, 처음 열릴 때 작업 표시줄에만 뜸.
+- 수정: `close_requested()`를 감지해 `settings_open = false`. 위치는 빌더 `with_position` 대신 창 생성 후 `ViewportCommand::OuterPosition(모니터 중앙)` + `Focus` 커맨드 전송(HUD 검증된 방식)으로 해결.
+
+**2. 설정 토글 즉시 원복 (vim 체크 즉시 해제)**
+
+- 원인: `settings_ui`가 매 프레임 `controller.config`를 복제해 편집 → 포커스 잃을 때마다 원복.
+- 수정: `settings_cfg: Option<Config>` 드래프트를 유지. UI는 드래프트만 편집, Save 시 반영 + `Config::save`.
+
+**3. 테마 시스템 (dracula 포함 다중 테마 + 사용자 테마 제작)**
+
+- `mokey-core/src/theme.rs` 신규: `Rgba`(hex 직렬화), `Theme`(overlay/grid/label/accent/hint_bg/hint_text/status/bg/panel/text/dark), 빌트인 `dark`/`dracula`/`nord`/`light`, `Theme::resolve`(custom 우선 → 빌트인 → dark). hex 왕복/리졸브 테스트 포함.
+- `Config` 확장: `general.theme`(활성 테마, 기본 "dark") + `custom_themes: BTreeMap<String, Theme>`.
+- HUD 렌더링 전면 테마화(`draw_hud`), 설정창/패널/텍스트 색은 `apply_visuals`로 egui 시각에 반영(캐시 키로 변경 시에만 적용).
+- 설정창에 Theme 섹션: 테마 ComboBox(빌트인+커스텀), 스와치 미리보기, "Create your own theme" 에디터(색상 10종: 컬러픽커 + hex 텍스트), Save as theme / Delete this theme. 저장된 커스텀 테마는 `config.toml`의 `[custom_themes.<name>]`로도 직접 편집 가능.
+- 빌드 경고 정리: `Stroke::new(1.0_f32, ...)` 명시.
+
 ### 2026-08-06 — 키 입력 라우팅 전면 재설계 + 클릭 안정화
 
 이번 세션에서 해결한 핵심 문제들.
@@ -54,7 +74,7 @@
 
 - Windows에서 트리거 → 줌(최대 6단계) → Enter 클릭 전체 흐름 동작 확인.
 - 클릭 주입이 HUD 창에 삼켜지던 문제 해결 후 스포티파이/브라우저 대상 클릭 성공.
-- 테스트: `cargo test` (mokey-core 17건 등 모두 통과).
+- 테스트: `cargo test` (mokey-core 20건 등 모두 통과).
 
 ## 남은 작업
 

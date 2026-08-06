@@ -47,10 +47,26 @@ auto_click = false
 overlay_bg_opacity = 0.45
 move_step = 10
 move_fast_step = 100
+theme = "dark"
 
 [vim]
 enabled = false
+
+[custom_themes.dracula-custom]
+overlay = "#1E1E2EBB"
+grid = "#F5C2E7"
+label = "#CDD6F4"
+accent = "#CBA6F7"
+hint_bg = "#1E1E2EE6"
+hint_text = "#A6ADC8"
+status = "#F38BA8"
+bg = "#181825"
+panel = "#1E1E2E"
+text = "#CDD6F4"
+dark = true
 ```
+
+Themes can be picked or created in the settings window (`Ctrl+Alt+S`) → Theme. Builtin: `dark` · `dracula` · `nord` · `light`.
 
 ## Architecture
 

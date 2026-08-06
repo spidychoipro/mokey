@@ -8,7 +8,7 @@ use egui::{
 };
 use mokey_backend::hotkey::HotkeyId;
 use mokey_backend::mouse::{MouseBackend, MouseButton};
-use mokey_core::{Config, KeyEvent, MokeyKey, Point};
+use mokey_core::{Config, KeyEvent, MokeyKey, Point, Rgba, Theme};
 
 use crate::controller::{Controller, ExecOutcome};
 
@@ -60,6 +60,10 @@ fn egui_key_to_mokey(key: egui::Key) -> Option<MokeyKey> {
     Some(mk)
 }
 
+fn to_color32(c: Rgba) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
+}
+
 /// A pointer action that must run only after the HUD window has actually
 /// moved offscreen (viewport commands are applied at the end of the frame).
 #[derive(Clone, Copy)]
@@ -79,6 +83,12 @@ pub struct MokeyApp {
     hud_visible: bool,
     settings_open: bool,
     settings_saved_hint: Option<String>,
+    settings_pos: Option<Pos2>,
+    settings_cfg: Option<Config>,
+    theme_editor_open: bool,
+    theme_draft_name: String,
+    theme_draft: Theme,
+    applied_theme: Option<String>,
     hud_bg: Option<TextureHandle>,
     hud_offscreen: bool,
     hud_pos: Option<Pos2>,
@@ -116,6 +126,12 @@ impl MokeyApp {
             hud_visible: false,
             settings_open: false,
             settings_saved_hint: None,
+            settings_pos: None,
+            settings_cfg: None,
+            theme_editor_open: false,
+            theme_draft_name: String::new(),
+            theme_draft: Theme::dark(),
+            applied_theme: None,
             hud_bg: None,
             hud_offscreen: true,
             hud_pos: None,
@@ -163,9 +179,31 @@ impl MokeyApp {
         while let Ok(hk) = self.hotkeys.try_recv() {
             match hk {
                 HotkeyId::Trigger => self.trigger(ctx),
-                HotkeyId::Settings => self.settings_open = !self.settings_open,
+                HotkeyId::Settings => {
+                    if !self.settings_open {
+                        self.settings_pos = self.default_settings_pos();
+                        self.settings_cfg = Some(self.controller.config.clone());
+                    }
+                    self.settings_open = !self.settings_open;
+                }
             }
         }
+    }
+
+    fn default_settings_pos(&self) -> Option<Pos2> {
+        let cursor = self.controller.mouse.location().ok();
+        let monitor = match cursor {
+            Some((x, y)) => self
+                .monitors
+                .iter()
+                .find(|m| m.rect.contains(Point { x, y }))
+                .or_else(|| self.monitors.first())
+                .cloned(),
+            None => self.monitors.first().cloned(),
+        }?;
+        let cx = (monitor.rect.x as f32 + monitor.rect.w as f32 / 2.0) / monitor.scale as f32;
+        let cy = (monitor.rect.y as f32 + monitor.rect.h as f32 / 2.0) / monitor.scale as f32;
+        Some(Pos2::new(cx - 230.0, cy - 280.0))
     }
 
     fn handle_hud_input(&mut self, ctx: &egui::Context) {
@@ -301,7 +339,16 @@ impl MokeyApp {
             return;
         };
         let opacity = self.controller.config.general.overlay_opacity();
-        let bg = Color32::from_black_alpha((opacity * 255.0) as u8);
+        let theme = Theme::resolve(
+            &self.controller.config.general.theme,
+            &self.controller.config.custom_themes,
+        );
+        let bg = Color32::from_rgba_unmultiplied(
+            theme.overlay.r,
+            theme.overlay.g,
+            theme.overlay.b,
+            (opacity * 255.0) as u8,
+        );
         let scale = ctx.pixels_per_point() as f64;
         let monitor = session.monitor;
         let origin = Pos2 {
@@ -337,7 +384,7 @@ impl MokeyApp {
                 painter.rect_stroke(
                     UiRect::from_min_max(region_min, region_max),
                     0.0,
-                    Stroke::new(3.0_f32, Color32::from_rgb(80, 220, 255)),
+                    Stroke::new(3.0_f32, to_color32(theme.accent)),
                     StrokeKind::Inside,
                 );
 
@@ -357,7 +404,7 @@ impl MokeyApp {
                         painter.rect_stroke(
                             UiRect::from_min_max(min, max),
                             0.0,
-                            Stroke::new(stroke, Color32::from_white_alpha(120)),
+                            Stroke::new(stroke, to_color32(theme.grid)),
                             StrokeKind::Inside,
                         );
                         if cell_min >= 20.0 {
@@ -370,7 +417,7 @@ impl MokeyApp {
                                 Align2::CENTER_CENTER,
                                 label.to_string(),
                                 FontId::proportional(font_size),
-                                Color32::from_white_alpha(220),
+                                to_color32(theme.label),
                             );
                         }
                     }
@@ -388,13 +435,13 @@ impl MokeyApp {
                     Pos2 { x: 0.0, y: bottom - 34.0 },
                     Pos2 { x: width, y: bottom },
                 );
-                painter.rect_filled(bar_rect, 0.0, Color32::from_black_alpha(140));
+                painter.rect_filled(bar_rect, 0.0, to_color32(theme.hint_bg));
                 painter.text(
                     Pos2 { x: width * 0.5, y: bottom - 17.0 },
                     Align2::CENTER_CENTER,
                     hints,
                     FontId::proportional(16.0),
-                    Color32::WHITE,
+                    to_color32(theme.hint_text),
                 );
 
                 let depth = session.depth;
@@ -408,9 +455,30 @@ impl MokeyApp {
                     Align2::LEFT_TOP,
                     status,
                     FontId::proportional(15.0),
-                    Color32::WHITE,
+                    to_color32(theme.status),
                 );
             });
+    }
+
+    fn apply_visuals(&mut self, ctx: &egui::Context) {
+        let theme = Theme::resolve(
+            &self.controller.config.general.theme,
+            &self.controller.config.custom_themes,
+        );
+        let key = format!("{}{}", theme.name, if theme.dark { ":d" } else { ":l" });
+        if self.applied_theme.as_deref() == Some(key.as_str()) {
+            return;
+        }
+        let mut visuals = if theme.dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        };
+        visuals.panel_fill = to_color32(theme.panel);
+        visuals.window_fill = to_color32(theme.bg);
+        visuals.override_text_color = Some(to_color32(theme.text));
+        ctx.set_visuals(visuals);
+        self.applied_theme = Some(key);
     }
 
     fn settings_window(&mut self, ctx: &egui::Context) {
@@ -418,35 +486,137 @@ impl MokeyApp {
             return;
         }
         let id = self.settings_viewport;
-        ctx.show_viewport_immediate(
-            id,
-            egui::ViewportBuilder::default()
-                .with_title("mokey settings")
-                .with_inner_size([460.0, 560.0]),
-            |ctx, class| {
-                if class == egui::ViewportClass::Embedded {
-                    return;
-                }
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.settings_ui(ui));
-                });
-            },
-        );
+        let builder = egui::ViewportBuilder::default()
+            .with_title("mokey settings")
+            .with_inner_size([460.0, 560.0]);
+        ctx.show_viewport_immediate(id, builder, |ctx, class| {
+            if class == egui::ViewportClass::Embedded {
+                return;
+            }
+            if ctx.input(|i| i.viewport().close_requested()) {
+                self.settings_open = false;
+            }
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.settings_ui(ui));
+            });
+        });
+        if let Some(pos) = self.settings_pos.take() {
+            // The viewport exists now; command it onto a visible monitor. The
+            // builder's position alone can't fight the offscreen parent.
+            ctx.send_viewport_cmd_to(id, ViewportCommand::OuterPosition(pos));
+            ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
+        }
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
-        let mut cfg = self.controller.config.clone();
+        if self.settings_cfg.is_none() {
+            self.settings_cfg = Some(self.controller.config.clone());
+        }
+        let cfg = self.settings_cfg.as_mut().expect("settings_cfg set above");
 
         ui.heading("mokey");
-        ui.add_space(4.0);
+        ui.label(egui::RichText::new("Keyboard mouse control").weak());
+        ui.add_space(8.0);
 
+        // ---- Theme ----
         ui.separator();
-        ui.label(egui::RichText::new("Vim mode (default OFF)").strong());
+        ui.label(egui::RichText::new("Theme").strong());
+        let theme_name = cfg.general.theme.clone();
+        let custom_names: Vec<String> = cfg.custom_themes.keys().cloned().collect();
+        egui::ComboBox::from_label("theme")
+            .selected_text(&theme_name)
+            .width(180.0)
+            .show_ui(ui, |ui| {
+                for name in Theme::builtin_names() {
+                    ui.selectable_value(&mut cfg.general.theme, name.to_string(), name);
+                }
+                for name in &custom_names {
+                    ui.selectable_value(&mut cfg.general.theme, name.clone(), name);
+                }
+            });
+        let active = Theme::resolve(&cfg.general.theme, &cfg.custom_themes);
+        ui.horizontal_wrapped(|ui| {
+            theme_swatch(ui, active.overlay, "overlay");
+            theme_swatch(ui, active.accent, "accent");
+            theme_swatch(ui, active.grid, "grid");
+            theme_swatch(ui, active.label, "label");
+            theme_swatch(ui, active.hint_bg, "hint");
+            theme_swatch(ui, active.bg, "bg");
+        });
+        if ui
+            .button(if self.theme_editor_open {
+                "Close theme editor"
+            } else {
+                "Create your own theme"
+            })
+            .clicked()
+        {
+            self.theme_editor_open = !self.theme_editor_open;
+            if self.theme_editor_open {
+                let a = Theme::resolve(&cfg.general.theme, &cfg.custom_themes);
+                self.theme_draft_name = if Theme::builtin_names().contains(&a.name.as_str()) {
+                    "my theme".to_string()
+                } else {
+                    a.name.clone()
+                };
+                self.theme_draft = a;
+            }
+        }
+        if self.theme_editor_open {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("name");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.theme_draft_name).desired_width(120.0),
+                );
+            });
+            color_row(ui, "overlay tint", &mut self.theme_draft.overlay);
+            color_row(ui, "grid line", &mut self.theme_draft.grid);
+            color_row(ui, "cell label", &mut self.theme_draft.label);
+            color_row(ui, "accent", &mut self.theme_draft.accent);
+            color_row(ui, "hint bar", &mut self.theme_draft.hint_bg);
+            color_row(ui, "hint text", &mut self.theme_draft.hint_text);
+            color_row(ui, "status", &mut self.theme_draft.status);
+            color_row(ui, "window bg", &mut self.theme_draft.bg);
+            color_row(ui, "panel bg", &mut self.theme_draft.panel);
+            color_row(ui, "text", &mut self.theme_draft.text);
+            ui.checkbox(&mut self.theme_draft.dark, "dark visuals");
+            ui.horizontal(|ui| {
+                if ui.button("Save as theme").clicked() {
+                    let name = self.theme_draft_name.trim().to_string();
+                    if !name.is_empty() {
+                        self.theme_draft.name = name.clone();
+                        cfg.custom_themes
+                            .insert(name.clone(), self.theme_draft.clone());
+                        cfg.general.theme = name;
+                    }
+                }
+                if cfg.custom_themes.contains_key(&cfg.general.theme) {
+                    if ui.button("Delete this theme").clicked() {
+                        cfg.custom_themes.remove(&cfg.general.theme);
+                        cfg.general.theme = "dark".to_string();
+                    }
+                }
+            });
+            ui.label(
+                egui::RichText::new(
+                    "Tip: exact colors can also be edited in config.toml under [custom_themes.<name>].",
+                )
+                .weak()
+                .small(),
+            );
+        }
+
+        // ---- Vim mode ----
+        ui.add_space(8.0);
+        ui.separator();
+        ui.label(egui::RichText::new("Vim mode").strong());
         ui.checkbox(&mut cfg.vim.enabled, "Enable vim-style control after grid zoom");
         if cfg.vim.enabled {
             ui.label("hjkl move · H/J/K/L fast move · m/,. click · e/y scroll · v drag");
         }
 
+        // ---- Grid ----
         ui.add_space(8.0);
         ui.separator();
         ui.label(egui::RichText::new("Grid").strong());
@@ -458,12 +628,14 @@ impl MokeyApp {
                 .text("overlay opacity"),
         );
 
+        // ---- Vim movement ----
         ui.add_space(8.0);
         ui.separator();
         ui.label(egui::RichText::new("Vim movement").strong());
         ui.add(egui::Slider::new(&mut cfg.general.move_step, 1..=100).text("hjkl step (px)"));
         ui.add(egui::Slider::new(&mut cfg.general.move_fast_step, 10..=500).text("HJKL step (px)"));
 
+        // ---- Hotkeys ----
         ui.add_space(8.0);
         ui.separator();
         ui.label(egui::RichText::new("Hotkeys").strong());
@@ -478,18 +650,62 @@ impl MokeyApp {
         });
 
         ui.add_space(12.0);
-        if ui.button("Save").clicked() {
-            self.controller.config = cfg.clone();
-            let result = self.controller.config.save();
-            match result {
-                Ok(path) => self.settings_saved_hint = Some(format!("saved to {}", path.display())),
-                Err(e) => self.settings_saved_hint = Some(format!("save failed: {e}")),
+        ui.horizontal(|ui| {
+            if ui.button("Save").clicked() {
+                let new_cfg = cfg.clone();
+                self.controller.config = new_cfg;
+                let result = self.controller.config.save();
+                match result {
+                    Ok(path) => {
+                        self.settings_saved_hint = Some(format!("saved to {}", path.display()))
+                    }
+                    Err(e) => self.settings_saved_hint = Some(format!("save failed: {e}")),
+                }
             }
-        }
+            if ui.button("Cancel").clicked() {
+                self.settings_open = false;
+            }
+        });
         if let Some(hint) = &self.settings_saved_hint {
             ui.label(hint);
         }
     }
+}
+
+fn theme_swatch(ui: &mut egui::Ui, rgba: Rgba, label: &str) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 12.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0, to_color32(rgba));
+    ui.painter().rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0_f32, Color32::from_gray(90)),
+        egui::StrokeKind::Inside,
+    );
+    ui.label(label);
+}
+
+fn color_row(ui: &mut egui::Ui, label: &str, color: &mut Rgba) {
+    ui.horizontal(|ui| {
+        ui.label(format!("{label:>12}"));
+        let mut c = to_color32(*color);
+        if ui.color_edit_button_srgba(&mut c).changed() {
+            *color = Rgba {
+                r: c.r(),
+                g: c.g(),
+                b: c.b(),
+                a: c.a(),
+            };
+        }
+        let mut hex = color.to_hex();
+        if ui
+            .add(egui::TextEdit::singleline(&mut hex).desired_width(82.0))
+            .changed()
+        {
+            if let Some(v) = Rgba::from_hex(&hex) {
+                *color = v;
+            }
+        }
+    });
 }
 
 fn capture_monitor_bg(
@@ -511,6 +727,7 @@ fn capture_monitor_bg(
 impl eframe::App for MokeyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.flush_pending();
+        self.apply_visuals(ctx);
         self.drain_hotkeys(ctx);
         self.handle_hud_input(ctx);
         self.drain_global_keys(ctx);

@@ -1,4 +1,6 @@
+use crate::theme::Theme;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -6,6 +8,8 @@ use std::path::PathBuf;
 pub struct Config {
     pub general: General,
     pub vim: Vim,
+    /// User-defined themes. Key = theme name, selectable via `general.theme`.
+    pub custom_themes: BTreeMap<String, Theme>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +31,8 @@ pub struct General {
     pub move_step: i32,
     /// Pixel step for uppercase HJKL cursor movement (vim mode).
     pub move_fast_step: i32,
+    /// Active theme name (builtin or custom).
+    pub theme: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +59,7 @@ impl Default for General {
             overlay_bg_opacity: 0.45,
             move_step: 10,
             move_fast_step: 100,
+            theme: "dark".to_string(),
         }
     }
 }
@@ -69,8 +76,10 @@ impl Default for Config {
                 overlay_bg_opacity: 0.45,
                 move_step: 10,
                 move_fast_step: 100,
+                theme: "dark".to_string(),
             },
             vim: Vim { enabled: false },
+            custom_themes: BTreeMap::new(),
         }
     }
 }
