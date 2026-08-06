@@ -1,16 +1,73 @@
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egui::{
     Align2, Color32, FontId, Pos2, Rect as UiRect, Stroke, StrokeKind, TextureHandle,
     TextureOptions, ViewportCommand, ViewportId,
 };
 use mokey_backend::hotkey::HotkeyId;
-use mokey_backend::mouse::MouseBackend;
-use mokey_core::{Config, KeyEvent, Point};
+use mokey_backend::mouse::{MouseBackend, MouseButton};
+use mokey_core::{Config, KeyEvent, MokeyKey, Point};
 
 use crate::controller::{Controller, ExecOutcome};
+
+#[allow(unused)]
+fn dbg(msg: impl AsRef<str>) {
+    if std::env::var_os("MOKEY_DEBUG").is_none() {
+        return;
+    }
+    use std::io::Write;
+    let desk = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into());
+    let path = std::path::Path::new(&desk).join("Desktop").join("mokey-debug.log");
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "[{ts}] {}", msg.as_ref());
+    }
+}
+
+fn egui_key_to_mokey(key: egui::Key) -> Option<MokeyKey> {
+    use egui::Key as K;
+    let mk = match key {
+        K::Num1 => MokeyKey::Digit(1),
+        K::Num2 => MokeyKey::Digit(2),
+        K::Num3 => MokeyKey::Digit(3),
+        K::Num4 => MokeyKey::Digit(4),
+        K::Num5 => MokeyKey::Digit(5),
+        K::Num6 => MokeyKey::Digit(6),
+        K::Num7 => MokeyKey::Digit(7),
+        K::Num8 => MokeyKey::Digit(8),
+        K::Num9 => MokeyKey::Digit(9),
+        K::Escape => MokeyKey::Escape,
+        K::Enter => MokeyKey::Enter,
+        K::Space => MokeyKey::Space,
+        K::Backspace => MokeyKey::Backspace,
+        K::H => MokeyKey::H,
+        K::J => MokeyKey::J,
+        K::K => MokeyKey::K,
+        K::L => MokeyKey::L,
+        K::M => MokeyKey::M,
+        K::E => MokeyKey::E,
+        K::Y => MokeyKey::Y,
+        K::V => MokeyKey::V,
+        K::Comma => MokeyKey::Comma,
+        K::Period => MokeyKey::Period,
+        _ => return None,
+    };
+    Some(mk)
+}
+
+/// A pointer action that must run only after the HUD window has actually
+/// moved offscreen (viewport commands are applied at the end of the frame).
+#[derive(Clone, Copy)]
+struct PendingAction {
+    click: Option<MouseButton>,
+    press_drag: Option<bool>,
+    at: Instant,
+}
 
 pub struct MokeyApp {
     controller: Controller,
@@ -25,6 +82,8 @@ pub struct MokeyApp {
     hud_bg: Option<TextureHandle>,
     hud_offscreen: bool,
     hud_pos: Option<Pos2>,
+    focus_log_at: Option<Instant>,
+    pending: Option<PendingAction>,
 }
 
 impl MokeyApp {
@@ -60,7 +119,30 @@ impl MokeyApp {
             hud_bg: None,
             hud_offscreen: true,
             hud_pos: None,
+            focus_log_at: None,
+            pending: None,
         }
+    }
+
+    fn flush_pending(&mut self) {
+        let Some(p) = self.pending else {
+            return;
+        };
+        if p.at.elapsed() < Duration::from_millis(60) {
+            return;
+        }
+        self.pending = None;
+        let loc = self.controller.mouse.location().ok();
+        dbg(format!(
+            "APP inject click={:?} press_drag={:?} at loc={loc:?}",
+            p.click, p.press_drag
+        ));
+        let out = ExecOutcome {
+            click: p.click,
+            press_drag: p.press_drag,
+            ..Default::default()
+        };
+        self.controller.apply_hidden_actions(&out);
     }
 
     fn move_hud_offscreen(&mut self, ctx: &egui::Context) {
@@ -86,12 +168,55 @@ impl MokeyApp {
         }
     }
 
+    fn handle_hud_input(&mut self, ctx: &egui::Context) {
+        if !self.hud_visible {
+            return;
+        }
+        let mut keys: Vec<KeyEvent> = Vec::new();
+        ctx.input(|i| {
+            for event in &i.events {
+                if let egui::Event::Key { key, physical_key, pressed, repeat, modifiers, .. } = event {
+                    if *pressed && !*repeat {
+                        let mapped = physical_key
+                            .and_then(egui_key_to_mokey)
+                            .or_else(|| egui_key_to_mokey(*key));
+                        dbg(format!(
+                            "EGUI raw: key={key:?} phys={physical_key:?} shift={} mapped={mapped:?}",
+                            modifiers.shift
+                        ));
+                        if let Some(mk) = mapped {
+                            keys.push(KeyEvent { key: mk, shift: modifiers.shift });
+                        }
+                    }
+                }
+            }
+        });
+        for ev in keys {
+            let outcome = self.controller.process(ev);
+            dbg(format!(
+                "EGUI key {ev:?} -> hide={} show={} click={:?} finished={}",
+                outcome.hide_hud,
+                outcome.show_hud,
+                outcome.click,
+                outcome.finished
+            ));
+            self.apply_outcome(ctx, &outcome);
+        }
+    }
+
     fn drain_global_keys(&mut self, ctx: &egui::Context) {
         // Keys are only forwarded while drag capture is active.
         while self.capture.load(Ordering::Relaxed) {
             match self.global_keys.try_recv() {
                 Ok(ev) => {
                     let outcome = self.controller.process(ev);
+                    dbg(format!(
+                        "APP recv {ev:?} -> hide={} show={} click={:?} finished={}",
+                        outcome.hide_hud,
+                        outcome.show_hud,
+                        outcome.click,
+                        outcome.finished
+                    ));
                     self.apply_outcome(ctx, &outcome);
                 }
                 Err(_) => break,
@@ -119,7 +244,7 @@ impl MokeyApp {
         self.hud_bg = capture_monitor_bg(ctx, &monitor);
         self.controller.start_session(monitor.rect);
         self.show_hud_over_monitor(ctx, &monitor);
-        self.capture.store(true, Ordering::Relaxed);
+        dbg("APP trigger: hud shown");
     }
 
     fn show_hud_over_monitor(&mut self, ctx: &egui::Context, monitor: &mokey_backend::platform::MonitorInfo) {
@@ -142,12 +267,6 @@ impl MokeyApp {
             self.move_hud_offscreen(ctx);
             self.hud_bg = None;
         }
-        let needs_delay = outcome.click.is_some() || outcome.press_drag.is_some();
-        if needs_delay {
-            // Let the OS process the window move before injecting input.
-            std::thread::sleep(Duration::from_millis(30));
-            self.controller.apply_hidden_actions(outcome);
-        }
         if outcome.capture_keys {
             self.capture.store(true, Ordering::Relaxed);
         }
@@ -158,6 +277,22 @@ impl MokeyApp {
         if outcome.finished {
             self.hud_visible = false;
             self.capture.store(false, Ordering::Relaxed);
+        }
+        if outcome.click.is_some() || outcome.press_drag.is_some() {
+            if outcome.hide_hud {
+                // Window move commands apply at the end of this frame, so the
+                // HUD still covers the screen here. Inject on a later frame.
+                self.pending = Some(PendingAction {
+                    click: outcome.click,
+                    press_drag: outcome.press_drag,
+                    at: Instant::now(),
+                });
+                ctx.request_repaint();
+            } else {
+                // e.g. drag release while the HUD returns: window is already
+                // offscreen, so inject immediately.
+                self.controller.apply_hidden_actions(outcome);
+            }
         }
     }
 
@@ -207,7 +342,6 @@ impl MokeyApp {
                 );
 
                 let grid = session.grid();
-                let label_font = FontId::proportional(26.0);
                 for label in 1..=grid.label_count() {
                     if let Some(cell) = session.cell_rect(label) {
                         let min = Pos2 {
@@ -218,22 +352,27 @@ impl MokeyApp {
                             x: ((cell.x + cell.w as i32) as f64 / scale) as f32 - origin.x,
                             y: ((cell.y + cell.h as i32) as f64 / scale) as f32 - origin.y,
                         };
+                        let cell_min = (max.x - min.x).min(max.y - min.y);
+                        let stroke = (cell_min / 12.0).clamp(0.5, 1.5);
                         painter.rect_stroke(
                             UiRect::from_min_max(min, max),
                             0.0,
-                            Stroke::new(1.5_f32, Color32::from_white_alpha(120)),
+                            Stroke::new(stroke, Color32::from_white_alpha(120)),
                             StrokeKind::Inside,
                         );
-                        painter.text(
-                            Pos2 {
-                                x: (min.x + max.x) * 0.5,
-                                y: (min.y + max.y) * 0.5,
-                            },
-                            Align2::CENTER_CENTER,
-                            label.to_string(),
-                            label_font.clone(),
-                            Color32::from_white_alpha(220),
-                        );
+                        if cell_min >= 20.0 {
+                            let font_size = (cell_min * 0.5).clamp(12.0, 26.0);
+                            painter.text(
+                                Pos2 {
+                                    x: (min.x + max.x) * 0.5,
+                                    y: (min.y + max.y) * 0.5,
+                                },
+                                Align2::CENTER_CENTER,
+                                label.to_string(),
+                                FontId::proportional(font_size),
+                                Color32::from_white_alpha(220),
+                            );
+                        }
                     }
                 }
 
@@ -371,12 +510,24 @@ fn capture_monitor_bg(
 
 impl eframe::App for MokeyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.flush_pending();
         self.drain_hotkeys(ctx);
+        self.handle_hud_input(ctx);
         self.drain_global_keys(ctx);
         self.draw_hud(ctx);
         self.settings_window(ctx);
         if !self.hud_visible {
             self.move_hud_offscreen(ctx);
+        }
+        if self.hud_visible {
+            let now = Instant::now();
+            if self.focus_log_at.map_or(true, |t| now - t > Duration::from_millis(500)) {
+                self.focus_log_at = Some(now);
+                let focused = ctx.input(|i| i.viewport().focused);
+                dbg(format!("EGUI focus: {focused:?}"));
+            }
+        } else {
+            self.focus_log_at = None;
         }
         ctx.request_repaint_after(Duration::from_millis(50));
     }

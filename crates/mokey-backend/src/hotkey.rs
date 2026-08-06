@@ -1,8 +1,27 @@
 use crate::error::BackendError;
 use mokey_core::{KeyEvent, MokeyKey};
 use rdev::{Event, EventType, Key};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
+
+#[allow(unused)]
+fn dbg(msg: impl AsRef<str>) {
+    if std::env::var_os("MOKEY_DEBUG").is_none() {
+        return;
+    }
+    use std::io::Write;
+    let desk = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into());
+    let path = std::path::Path::new(&desk).join("Desktop").join("mokey-debug.log");
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "[{ts}] {}", msg.as_ref());
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyId {
@@ -156,13 +175,29 @@ pub fn spawn(
         let is_shift = |k: Key| matches!(k, Key::ShiftLeft | Key::ShiftRight);
         let is_meta = |k: Key| matches!(k, Key::MetaLeft | Key::MetaRight);
 
+        let mut held: HashSet<Key> = HashSet::new();
+        let mut suppress_until: Option<Instant> = None;
+
         let on_key = move |event: Event,
+                           held: &mut HashSet<Key>,
+                           suppress_until: &mut Option<Instant>,
                            ctrl: &mut bool,
                            alt: &mut bool,
                            shift: &mut bool,
                            meta: &mut bool| {
             match event.event_type {
                 EventType::KeyPress(key) => {
+                    // Auto-repeat produces a KeyPress for a key that is already
+                    // down. Ignore it so a held key (e.g. the trigger's Space)
+                    // cannot be forwarded or re-match the hotkey.
+                    if !held.insert(key) {
+                        dbg(format!("REPEAT {key:?} ignored"));
+                        return;
+                    }
+                    dbg(format!(
+                        "PRESS {key:?} ctrl={ctrl} alt={alt} shift={shift} cap={}",
+                        capture.load(Ordering::Relaxed)
+                    ));
                     if is_ctrl(key) {
                         *ctrl = true;
                         return;
@@ -187,15 +222,28 @@ pub fn spawn(
                             }
                             let _ = hk_tx.send(id);
                             matched_hotkey = true;
+                            // Windows reports modifier releases (and stale repeats)
+                            // as KeyPress events right after a hotkey fires. Block
+                            // every forwarded key briefly so the trigger's own
+                            // Space cannot become a click that ends the session.
+                            *suppress_until = Some(Instant::now() + Duration::from_millis(400));
                         }
                     }
-                    if !matched_hotkey && capture.load(Ordering::Relaxed) {
+                    let cap = capture.load(Ordering::Relaxed);
+                    let suppressed = suppress_until.map_or(false, |t| Instant::now() < t);
+                    let mut forwarded = None;
+                    if !matched_hotkey && cap && !suppressed {
                         if let Some(ke) = map_key(key, *shift) {
                             let _ = key_tx.send(ke);
+                            forwarded = Some(format!("{ke:?}"));
                         }
                     }
+                    dbg(format!(
+                        "  -> matched={matched_hotkey} cap={cap} suppressed={suppressed} fwd={forwarded:?}"
+                    ));
                 }
                 EventType::KeyRelease(key) => {
+                    held.remove(&key);
                     if is_ctrl(key) {
                         *ctrl = false;
                     }
@@ -214,7 +262,7 @@ pub fn spawn(
         };
 
         let result = rdev::listen(move |event| {
-            on_key(event, &mut ctrl, &mut alt, &mut shift, &mut meta)
+            on_key(event, &mut held, &mut suppress_until, &mut ctrl, &mut alt, &mut shift, &mut meta)
         });
         if let Err(e) = result {
             eprintln!("mokey: global key listener failed: {e:?}");

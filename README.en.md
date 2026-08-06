@@ -42,8 +42,8 @@ Config file: `%USERPROFILE%\.config\mokey\config.toml`
 trigger_hotkey = "Ctrl+Alt+Space"
 settings_hotkey = "Ctrl+Alt+S"
 grid_size = 3
-max_depth = 4
-auto_click = true
+max_depth = 6
+auto_click = false
 overlay_bg_opacity = 0.45
 move_step = 10
 move_fast_step = 100
@@ -64,6 +64,10 @@ enabled = false
 - Phase 2: Hyprland support
 - Phase 3: KDE Plasma + GNOME support
 - Phase 4: More features (gestures, coordinate bookmarks, etc.)
+
+## Development log
+
+See [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md) for progress and debugging notes.
 
 ## License
 

@@ -76,16 +76,19 @@ impl Controller {
             }
             Action::ZoomOut => self.move_to_region_center(),
             Action::ClickLeft => {
+                self.move_to_region_center();
                 out.hide_hud = true;
                 out.click = Some(MouseButton::Left);
                 out.finished = true;
             }
             Action::ClickMiddle => {
+                self.move_to_region_center();
                 out.hide_hud = true;
                 out.click = Some(MouseButton::Middle);
                 out.finished = true;
             }
             Action::ClickRight => {
+                self.move_to_region_center();
                 out.hide_hud = true;
                 out.click = Some(MouseButton::Right);
                 out.finished = true;

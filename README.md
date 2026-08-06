@@ -43,8 +43,8 @@ Windows에서 로우레벨 키/마우스 API(rdev, enigo, windows-sys)를 사용
 trigger_hotkey = "Ctrl+Alt+Space"
 settings_hotkey = "Ctrl+Alt+S"
 grid_size = 3
-max_depth = 4
-auto_click = true
+max_depth = 6
+auto_click = false
 overlay_bg_opacity = 0.45
 move_step = 10
 move_fast_step = 100
@@ -65,6 +65,10 @@ enabled = false
 - Phase 2: Hyprland 지원
 - Phase 3: KDE Plasma + GNOME 지원
 - Phase 4: 추가 기능(제스처, 좌표북마크 등)
+
+## 개발 로그
+
+진행 과정과 디버깅 기록은 [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md) 참고.
 
 ## 라이선스
 
